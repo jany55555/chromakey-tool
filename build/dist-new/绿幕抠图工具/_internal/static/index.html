@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>绿幕抠图工具</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #1e1f22; color: #ddd; }
+header { padding: 14px 20px; border-bottom: 1px solid #333; font-size: 16px; font-weight: 600; }
+main { display: grid; grid-template-columns: 1fr 320px; gap: 16px; padding: 16px 20px; }
+.stage { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; }
+.pane { background: #2b2d31; border-radius: 8px; padding: 8px; }
+.pane h3 { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: #999; }
+.view { position: relative; aspect-ratio: 16/9; border-radius: 4px; overflow: hidden; display: grid; place-items: center; background: #111; }
+.view img { max-width: 100%; max-height: 100%; display: block; }
+.view.checker { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 20px 20px; }
+.view.magenta { background: #f0f; } .view.black { background: #000; } .view.white { background: #fff; }
+.drop { grid-column: 1 / -1; border: 2px dashed #555; border-radius: 8px; padding: 28px; text-align: center; cursor: pointer; color: #aaa; }
+.drop.over { border-color: #4c8bf5; color: #fff; }
+aside { background: #2b2d31; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #aaa; }
+.row { display: flex; align-items: center; gap: 8px; }
+input[type=range] { flex: 1; } .val { width: 44px; text-align: right; color: #fff; font-variant-numeric: tabular-nums; }
+input[type=text], input[type=number], select { background: #1e1f22; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 5px 8px; }
+input[type=color] { width: 36px; height: 30px; padding: 0; border: none; background: none; }
+button { background: #4c8bf5; color: #fff; border: none; border-radius: 6px; padding: 9px 12px; font-size: 14px; cursor: pointer; }
+button.secondary { background: #3a3c42; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.seg { display: flex; } .seg button { flex: 1; border-radius: 0; background: #3a3c42; padding: 6px; font-size: 12px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; } .seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button.on { background: #4c8bf5; }
+.info { font-size: 12px; color: #999; word-break: break-all; white-space: pre-line; }
+.bar { height: 6px; background: #1e1f22; border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: #4c8bf5; transition: width .3s; }
+.msg { font-size: 12px; min-height: 18px; } .msg.err { color: #f66; } .msg.ok { color: #6c6; }
+.hint { font-size: 11px; color: #777; margin-top: -6px; }
+.timeline { grid-column: 1 / -1; }
+#loading { position: absolute; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.35); color: #fff; }
+.busy #loading { display: grid; }
+.hidden { display: none !important; }
+header { display: flex; align-items: center; gap: 24px; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { background: transparent; color: #aaa; border-radius: 6px; padding: 6px 14px; font-size: 13px; }
+.tabs button:hover { background: #2b2d31; color: #fff; }
+.tabs button.on { background: #4c8bf5; color: #fff; }
+.desc { font-size: 12px; color: #999; background: #1e1f22; border-radius: 6px; padding: 8px 10px; }
+.desc b { color: #ddd; font-weight: 500; }
+#playCanvas { width: 100%; aspect-ratio: 16/9; border-radius: 4px; display: block;
+  background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 20px 20px; }
+</style>
+</head>
+<body>
+<header><span>绿幕抠图工具</span>
+  <nav class="tabs" id="tabs">
+    <button data-tab="alpha" class="on">透明 WebM / MOV</button>
+    <button data-tab="stacked">堆叠 MP4（手机网页）</button>
+  </nav></header>
+<main>
+  <section class="stage">
+    <div id="drop" class="drop">把绿幕视频拖到这里，或点击选择文件
+      <input id="file" type="file" accept="video/*,.mov,.mkv" hidden></div>
+    <div class="pane hidden" id="paneA"><h3>原视频</h3>
+      <div class="view"><img id="imgOrig" alt=""></div></div>
+    <div class="pane hidden" id="paneB"><h3>抠图预览
+      <span class="seg" id="bgSeg" style="display:inline-flex;margin-left:8px;width:200px;vertical-align:middle">
+        <button data-bg="checker" class="on">棋盘格</button><button data-bg="magenta">洋红</button>
+        <button data-bg="black">黑</button><button data-bg="white">白</button></span></h3>
+      <div class="view checker" id="viewKey"><img id="imgKey" alt=""><div id="loading">处理中…</div></div></div>
+    <div class="pane timeline hidden" id="paneP"><h3>导出结果播放检查（WebGL 合成，和手机网页同一套方法）</h3>
+      <canvas id="playCanvas" width="640" height="360"></canvas>
+      <video id="playVideo" muted loop playsinline style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none"></video>
+      <div class="hint" id="playInfo" style="margin-top:6px"></div></div>
+    <div class="pane timeline hidden" id="paneT">
+      <label>预览时间点 <div class="row"><input id="time" type="range" min="0" max="1" step="0.01" value="0">
+        <span class="val" id="timeVal" style="width:70px">0.00s</span></div></label></div>
+  </section>
+  <aside>
+    <div class="info" id="meta">未选择视频</div>
+    <div id="tabAlpha" style="display:contents">
+    <label>幕布颜色 <div class="row"><input id="colorPick" type="color" value="#00ff00">
+      <input id="color" type="text" value="auto" style="flex:1">
+      <button class="secondary" id="autoColor" style="padding:5px 8px;font-size:12px">自动</button></div></label>
+    <div class="hint">auto = 取首帧左上角颜色；也可点击原视频画面取色</div>
+    <label>相似度 similarity（绿边残留调大，主体被抠穿调小）
+      <div class="row"><input id="similarity" type="range" min="0.01" max="0.5" step="0.01" value="0.15"><span class="val"></span></div></label>
+    <label>边缘羽化 blend
+      <div class="row"><input id="blend" type="range" min="0" max="0.3" step="0.01" value="0.05"><span class="val"></span></div></label>
+    <label>去绿溢色 despill（0 关闭）
+      <div class="row"><input id="despill" type="range" min="0" max="1" step="0.05" value="0.5"><span class="val"></span></div></label>
+    <label>输出格式 <div class="seg" id="fmtSeg">
+      <button data-fmt="webm" class="on">WebM（网页）</button><button data-fmt="mov">MOV ProRes 4444</button></div></label>
+    <label>输出宽度（0 = 保持原尺寸，等比缩放）<input id="width" type="number" min="0" step="2" value="0"></label>
+    <label id="crfBox">WebM 画质 CRF（越小越清晰，文件越大）
+      <div class="row"><input id="crf" type="range" min="15" max="50" step="1" value="30"><span class="val"></span></div></label>
+    </div>
+    <div id="tabStacked" style="display:contents" class="hidden">
+      <div class="desc">输出 <b>上半彩色 + 下半透明度</b> 的 H.264 MP4（640×720，24fps，无音轨）。
+        安卓 / iOS 都能硬解，网页用 WebGL 还原透明，不会像 WebM 那样在手机上变黑底。</div>
+      <label>不透明阈值 solid（人物被抠出洞就调大）
+        <div class="row"><input id="solid" type="range" min="0" max="120" step="1" value="40"><span class="val"></span></div></label>
+      <label>透明阈值 clear（背景残留绿色就调小）
+        <div class="row"><input id="clear" type="range" min="40" max="200" step="1" value="110"><span class="val"></span></div></label>
+      <div class="hint">按「绿色程度」G − max(R,B) 抠像，不需要选幕布颜色</div>
+      <label>画质 CRF（越小越清晰，文件越大）
+        <div class="row"><input id="scrf" type="range" min="14" max="32" step="1" value="20"><span class="val"></span></div></label>
+      <label>预览方式 <div class="seg" id="sViewSeg">
+        <button data-view="key" class="on">抠图效果</button><button data-view="raw">素材原样（上下两半）</button></div></label>
+    </div>
+    <button id="exportBtn" disabled>导出</button>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="msg" id="msg"></div>
+    <a id="dl" class="hidden"><button style="width:100%" class="secondary">下载结果</button></a>
+  </aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { id: null, name: '', duration: 0, width: 0, format: 'webm', autoColor: '',
+  tab: 'alpha', sView: 'key' };
+
+// 堆叠 MP4 页签的请求参数
+function sParams() {
+  return new URLSearchParams({ id: state.id, solid: $('solid').value, clear: $('clear').value,
+    crf: $('scrf').value, time: $('time').value, view: state.sView });
+}
+let previewTimer = 0, previewSeq = 0;
+
+function setMsg(text, cls = '') { $('msg').textContent = text; $('msg').className = 'msg ' + cls; }
+function fmtSize(b) { return b > 1 << 20 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024).toFixed(0) + ' KB'; }
+function hexToKey(h) { return '0x' + h.slice(1).toUpperCase(); }
+function keyToHex(k) { return '#' + k.slice(2).toLowerCase(); }
+
+function params() {
+  return new URLSearchParams({
+    id: state.id, color: $('color').value.trim(), format: state.format,
+    similarity: $('similarity').value, blend: $('blend').value, despill: $('despill').value,
+    crf: $('crf').value, width: $('width').value || 0, time: $('time').value,
+  });
+}
+
+// 滑块数值显示
+document.querySelectorAll('input[type=range]').forEach((r) => {
+  const v = r.parentElement.querySelector('.val');
+  const show = () => { if (v && r.id !== 'time') v.textContent = r.value; };
+  r.addEventListener('input', show); show();
+});
+async function upload(file) {
+  setMsg('上传中…'); $('exportBtn').disabled = true; $('dl').classList.add('hidden');
+  const r = await fetch('/api/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file });
+  const j = await r.json();
+  if (!r.ok) return setMsg(j.error, 'err');
+  Object.assign(state, { id: j.id, name: j.name, duration: j.duration, width: j.width, autoColor: j.color });
+  $('meta').textContent = `${j.name}\n${j.width}×${j.height} · ${j.fps}fps · ${j.duration.toFixed(2)}s · 自动幕布色 ${j.color}`;
+  $('color').value = 'auto'; $('colorPick').value = keyToHex(j.color);
+  $('time').max = Math.max(j.duration - 0.05, 0).toFixed(2); $('time').value = Math.min(1, $('time').max);
+  ['paneA', 'paneB', 'paneT'].forEach((id) => $(id).classList.remove('hidden'));
+  $('paneP').classList.add('hidden'); stopPlayback();
+  if (state.tab === 'stacked' && Math.abs(j.width / j.height - 16 / 9) > 0.02) {
+    setMsg(`提示：视频比例 ${j.width}×${j.height} 不是 16:9，会等比缩放并补透明边`);
+  } else setMsg('');
+  $('exportBtn').disabled = false;
+  refresh(true);
+}
+
+function refresh(withOriginal) {
+  if (!state.id) return;
+  $('timeVal').textContent = Number($('time').value).toFixed(2) + 's';
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => {  // 拖动滑块时防抖，停下来再请求
+    if (withOriginal) $('imgOrig').src = `/api/original?id=${state.id}&time=${$('time').value}`;
+    loadPreview();
+  }, 250);
+}
+async function loadPreview() {
+  const seq = ++previewSeq;
+  $('viewKey').classList.add('busy');
+  try {
+    const url = state.tab === 'stacked' ? '/api/stacked/preview?' + sParams() : '/api/preview?' + params();
+    const r = await fetch(url);
+    if (seq !== previewSeq) return;  // 已有更新的请求
+    if (!r.ok) return setMsg((await r.json()).error, 'err');
+    const old = $('imgKey').src;
+    $('imgKey').src = URL.createObjectURL(await r.blob());
+    if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+    if ($('msg').classList.contains('err')) setMsg('');
+    // 「素材原样」是 640×720 的上下两半图，预览框改成 8:9 才放得下
+    $('viewKey').style.aspectRatio = state.tab === 'stacked' && state.sView === 'raw' ? '8 / 9' : '';
+  } finally {
+    if (seq === previewSeq) $('viewKey').classList.remove('busy');
+  }
+}
+
+// 点击原视频画面取色
+$('imgOrig').addEventListener('click', (e) => {
+  const img = e.target, c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+  const x = Math.round(e.offsetX * img.naturalWidth / img.clientWidth);
+  const y = Math.round(e.offsetY * img.naturalHeight / img.clientHeight);
+  const [r, g, b] = ctx.getImageData(Math.max(x - 2, 0), Math.max(y - 2, 0), 5, 5).data
+    .reduce((s, v, i) => (s[i % 4] += v, s), [0, 0, 0, 0]).map((v) => Math.round(v / 25));
+  const hex = '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+  $('colorPick').value = hex; $('color').value = hexToKey(hex); refresh(false);
+});
+$('imgOrig').style.cursor = 'crosshair';
+
+$('colorPick').addEventListener('input', () => { $('color').value = hexToKey($('colorPick').value); refresh(false); });
+$('color').addEventListener('change', () => {
+  const v = $('color').value.trim();
+  if (/^0x[0-9a-f]{6}$/i.test(v)) $('colorPick').value = keyToHex(v);
+  refresh(false);
+});
+$('autoColor').addEventListener('click', () => {
+  $('color').value = 'auto'; if (state.autoColor) $('colorPick').value = keyToHex(state.autoColor); refresh(false);
+});
+['similarity', 'blend', 'despill', 'solid', 'clear'].forEach((id) => $(id).addEventListener('input', () => refresh(false)));
+// solid 必须小于 clear：拖动一个时把另一个推开
+$('solid').addEventListener('input', () => { if (+$('solid').value >= +$('clear').value) { $('clear').value = +$('solid').value + 1; $('clear').dispatchEvent(new Event('input')); } });
+$('clear').addEventListener('input', () => { if (+$('clear').value <= +$('solid').value) { $('solid').value = +$('clear').value - 1; $('solid').parentElement.querySelector('.val').textContent = $('solid').value; } });
+$('time').addEventListener('input', () => refresh(true));
+function segment(id, attr, onPick) {
+  $(id).addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    onPick(b.dataset[attr]);
+  });
+}
+segment('bgSeg', 'bg', (bg) => { $('viewKey').className = 'view ' + bg; });
+segment('fmtSeg', 'fmt', (f) => { state.format = f; $('crfBox').classList.toggle('hidden', f !== 'webm'); });
+segment('sViewSeg', 'view', (v) => { state.sView = v; refresh(false); });
+// 切换页签：两个页签共用已上传的视频和预览区
+segment('tabs', 'tab', (t) => {
+  state.tab = t;
+  $('tabAlpha').classList.toggle('hidden', t !== 'alpha');
+  $('tabStacked').classList.toggle('hidden', t !== 'stacked');
+  $('dl').classList.add('hidden'); $('bar').style.width = '0'; setMsg('');
+  $('paneP').classList.add('hidden'); stopPlayback();
+  $('imgKey').src = ''; refresh(false);
+});
+
+// ---- 导出结果播放检查：和手机网页同一套 WebGL 合成（上半取色、下半取透明度） ----
+let gl = null, playRaf = 0;
+function initGL() {
+  if (gl) return true;
+  gl = $('playCanvas').getContext('webgl', { premultipliedAlpha: true, alpha: true });
+  if (!gl) return false;
+  const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, 'attribute vec2 p;varying vec2 v;void main(){v=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0.,1.);}'));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, 'precision mediump float;uniform sampler2D t;varying vec2 v;void main(){' +
+    'vec3 c=texture2D(t,vec2(v.x,v.y*.5)).rgb;float a=texture2D(t,vec2(v.x,.5+v.y*.5)).r;' +
+    'a=clamp((a-.03)/.94,0.,1.);gl_FragColor=vec4(c*a,a);}'));
+  gl.linkProgram(p); gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(p, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+  [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T].forEach((k) => gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.clearColor(0, 0, 0, 0);
+  return true;
+}
+function stopPlayback() {
+  cancelAnimationFrame(playRaf); playRaf = 0;
+  const v = $('playVideo'); v.pause(); v.removeAttribute('src'); v.load();
+}
+function startPlayback(url) {
+  $('paneP').classList.remove('hidden');
+  if (!initGL()) { $('playInfo').textContent = '当前浏览器不支持 WebGL，无法播放检查（文件本身不受影响）'; return; }
+  const v = $('playVideo');
+  v.src = url; v.play().catch(() => { $('playInfo').textContent = '点一下画面开始播放'; });
+  $('playCanvas').onclick = () => v.play();
+  $('playInfo').textContent = '背景是棋盘格就说明透明正常；切换不同背景请用上方「抠图预览」';
+  (function draw() {
+    if (v.readyState >= 2) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
+      gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    playRaf = requestAnimationFrame(draw);
+  })();
+}
+const drop = $('drop');
+drop.addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', (e) => e.target.files[0] && upload(e.target.files[0]));
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+});
+$('exportBtn').addEventListener('click', async () => {
+  $('exportBtn').disabled = true; $('dl').classList.add('hidden'); $('bar').style.width = '0';
+  setMsg('导出中…');
+  const stackedTab = state.tab === 'stacked';
+  $('paneP').classList.add('hidden'); stopPlayback();
+  const p = stackedTab ? sParams() : params(); p.set('name', state.name);
+  const r = await fetch((stackedTab ? '/api/stacked/export?' : '/api/export?') + p, { method: 'POST' });
+  const j = await r.json();
+  if (!r.ok) { $('exportBtn').disabled = false; return setMsg(j.error, 'err'); }
+  const poll = async () => {
+    const s = await (await fetch('/api/job?id=' + j.job)).json();
+    $('bar').style.width = (s.progress * 100).toFixed(1) + '%';
+    if (s.status === 'running') { setMsg(`导出中… ${(s.progress * 100).toFixed(0)}%`); return setTimeout(poll, 500); }
+    $('exportBtn').disabled = false;
+    if (s.status === 'error') return setMsg('导出失败：' + s.error, 'err');
+    const extra = stackedTab ? `${s.frames} 帧` : `幕布色 ${s.color}`;
+    setMsg(`完成：${s.download_name}（${fmtSize(s.size)}，${extra}）`, 'ok');
+    $('dl').href = '/download?id=' + j.job; $('dl').classList.remove('hidden');
+    if (stackedTab) startPlayback('/api/stacked/file?id=' + j.job);
+  };
+  poll();
+});
+</script>
+</body>
+</html>
